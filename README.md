@@ -42,6 +42,5 @@ docker run -it --rm \
 
 ## Notes
 
-* Automatically installs `pylint` and `pylint-junit` inside the container.
 * Compatible with **Python 3.11-slim** base image.
 * Skips `.venv/` directories automatically.
