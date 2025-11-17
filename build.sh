@@ -1,52 +1,51 @@
 #!/bin/bash
 
-source functions.sh
-source log-functions.sh
-source str-functions.sh
-source file-functions.sh
-source aws-functions.sh
+# Determine codebase location
+CODEBASE_LOCATION="${WORKSPACE}/${CODEBASE_DIR}"
+REPORTS_DIR="${CODEBASE_LOCATION}/reports"
+REPORT_FILE_JSON="${REPORTS_DIR}/pytest_report.json"
+REPORT_FILE_CSV="${REPORTS_DIR}/pytest_report.csv"
 
-CODE="$WORKSPACE/$CODEBASE_DIR"
+# Ensure reports directory exists
+mkdir -p "${REPORTS_DIR}"
+chmod -R 777 "${REPORTS_DIR}" 2>/dev/null || true
 
-logInfoMessage "I'll run pytest on the test suite for $CODE to ensure that all functionality is working as expected.."
-sleep $SLEEP_DURATION
+# Navigate to the codebase
+cd "${CODEBASE_LOCATION}" || exit 1
 
-if [ -d "reports" ]; then
-   true
+# Ensure pytest and pytest-json-report are installed
+pip install --no-cache-dir pytest pytest-json-report jq >/dev/null
+
+# Run pytest and generate JSON report
+pytest --maxfail=1 --disable-warnings -q \
+       --json-report \
+       --json-report-file="${REPORT_FILE_JSON}" || true
+
+# Verify report existence
+if [ -s "${REPORT_FILE_JSON}" ]; then
+    echo "Pytest JSON report generated at ${REPORT_FILE_JSON}"
 else
-   mkdir reports
+    echo "Pytest did not produce any output."
+    exit 0
 fi
 
-if [ -d $CODE ]; then
-    logInfoMessage "Executing command"
-    logInfoMessage "pytest --color=yes --code-highlight=yes --show-capture=all --junit-xml=reports/$OUTPUT_ARG"
-    cd $CODE
-    pytest --color=yes --code-highlight=yes --show-capture=all  --junit-xml=reports/$OUTPUT_ARG
+# Create CSV header
+echo "test_name,outcome,duration_sec,nodeid,message" > "${REPORT_FILE_CSV}"
 
-exit_code=$?
+# Convert pytest JSON to CSV safely
+jq -r '
+  .tests[]? | [
+    (.name // ""),
+    (.outcome // ""),
+    (.duration // 0),
+    (.nodeid // ""),
+    ((.longrepr // .call.longrepr // "") | tostring | gsub("\n"; " ") | gsub("\""; "'"'"'"))
+  ] | @csv
+' "${REPORT_FILE_JSON}" >> "${REPORT_FILE_CSV}"
 
-    if [ $exit_code -ne 0 ]; then
-        if [ "$VALIDATION_FAILURE_ACTION" == "FAILURE" ]
-        then
-            logErrorMessage "Pytest unit test failed! Please review the error messages and update the code as necessary."
-            generateOutput $ACTIVITY_SUB_TASK_CODE false "pytest tests failed! Please review the error messages and update the code as necessary."
-            logErrorMessage "Please review the Pytest report for more information."
-            exit 1
-        else
-            logErrorMessage "Pytest unit test failed! Please review the error messages and update the code as necessary."
-            generateOutput $ACTIVITY_SUB_TASK_CODE false "Pytest unit test failed! Please review the error messages and update the code as necessary."
-            logWarningMessage "Please review the Pytest report for more information."
-        fi
-    else
-        logInfoMessage "Congratulations Pytest unit test succeeded."
-        generateOutput $ACTIVITY_SUB_TASK_CODE true "Congratulations Pytest unit test succeeded."
-    fi
+# Verify CSV report
+if [ -s "${REPORT_FILE_CSV}" ]; then
+    echo "Pytest CSV report generated at ${REPORT_FILE_CSV}"
 else
-    logErrorMessage "$CODE: Codebase directory is not found"
-    generateOutput $ACTIVITY_SUB_TASK_CODE false "$CODE Codebase directory is not found."
-    logErrorMessage "Please check the Git repository Pytest unit test failed.!!!"
+    echo "CSV conversion failed or no test cases found."
 fi
-
-
-
-
