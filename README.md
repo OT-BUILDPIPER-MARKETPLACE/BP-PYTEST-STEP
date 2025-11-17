@@ -4,8 +4,44 @@ Pytest provides a simple and powerful way to write and execute tests, with featu
 
 ## Setup
 * Clone the code available at [BP-PYTEST-STEP](https://github.com/OT-BUILDPIPER-MARKETPLACE/BP-PYTEST-STEP.git)
-* Build the docker image
 ```
 git submodule init
 git submodule update
-docker build -t ot/pytest:0.1 .
+cd BP-BASE-SHELL-STEPS
+git checkout v(latest)
+```
+
+### Build the Docker image
+```bash
+docker build -t pylint:latest .
+````
+
+---
+
+## Usage
+
+Run the container:
+
+```bash
+docker run -it --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /home/dragon/work/bp:/app/workspace \
+  -v /home/dragon/reports:/app/reports \
+  -e WORKSPACE=/app/workspace \
+  -e CODEBASE_DIR=attendance-api \
+  pylint:latest
+```
+
+---
+
+## Output
+
+* **Lint Report (XML)** → `/app/reports/pylint_report.xml`
+
+---
+
+## Notes
+
+* Automatically installs `pylint` and `pylint-junit` inside the container.
+* Compatible with **Python 3.11-slim** base image.
+* Skips `.venv/` directories automatically.
