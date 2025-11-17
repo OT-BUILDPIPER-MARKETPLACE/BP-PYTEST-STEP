@@ -13,7 +13,7 @@ git checkout v(latest)
 
 ### Build the Docker image
 ```bash
-docker build -t pylint:latest .
+docker build -t pytest:latest .
 ````
 
 ---
@@ -29,14 +29,14 @@ docker run -it --rm \
   -v /home/dragon/reports:/app/reports \
   -e WORKSPACE=/app/workspace \
   -e CODEBASE_DIR=attendance-api \
-  pylint:latest
+  pytest:latest
 ```
 
 ---
 
 ## Output
 
-* **Lint Report (XML)** → `/app/reports/pylint_report.xml`
+* **Test Report ** → `reports/pytest_report.json`
 
 ---
 
