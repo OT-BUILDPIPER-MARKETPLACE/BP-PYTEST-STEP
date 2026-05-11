@@ -61,6 +61,7 @@ ENV PYTHONUNBUFFERED=1
 # Copy Build Script and Set Permissions
 # ------------------------------------------------------------------------------
 WORKDIR /app
+COPY --chown=buildpiper:buildpiper BP-BASE-SHELL-STEPS /opt/buildpiper/shell-functions/
 COPY --chown=buildpiper:buildpiper build.sh ./
 RUN chmod +x build.sh && chown -R buildpiper:buildpiper /app
 
