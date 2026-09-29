@@ -1,11 +1,4 @@
-# ------------------------------------------------------------------------------
-# Base Image
-# ------------------------------------------------------------------------------
-FROM python:3.11-slim
-
-# ------------------------------------------------------------------------------
-# Create BuildPiper-Compatible Filesystem
-# ------------------------------------------------------------------------------
+FROM python:3.11-slim-trixie
 RUN groupadd -g 65522 buildpiper && \
     useradd -u 65522 -g buildpiper -d /home/buildpiper -m buildpiper && \
     mkdir -p \
@@ -22,10 +15,6 @@ RUN groupadd -g 65522 buildpiper && \
         /app \
         /home/buildpiper/reports && \
     chown -R buildpiper:buildpiper /src /bp /opt /usr /tmp /app /home/buildpiper
-
-# ------------------------------------------------------------------------------
-# Install System Dependencies
-# ------------------------------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash \
@@ -42,34 +31,16 @@ RUN apt-get update && \
         libpq-dev && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
-
-# ------------------------------------------------------------------------------
-# Create Python Virtual Environment and Install Pytest
-# ------------------------------------------------------------------------------
 RUN python3 -m venv /app/venv && \
     . /app/venv/bin/activate && \
-    pip install --no-cache-dir --upgrade pip pytest pytest-cov cryptography
-
-# ------------------------------------------------------------------------------
-# Environment Configuration
-# ------------------------------------------------------------------------------
-ENV PATH="/app/venv/bin:$PATH"
-ENV PYTHONWARNINGS="ignore::UserWarning:_distutils_hack"
+    pip install --no-cache-dir --upgrade pip pytest pytest-cov cryptography tabulate
+ENV PATH=/app/venv/bin:$PATH
+ENV PYTHONWARNINGS=ignore::UserWarning:_distutils_hack
 ENV PYTHONUNBUFFERED=1
-
-# ------------------------------------------------------------------------------
-# Copy Build Script and Set Permissions
-# ------------------------------------------------------------------------------
 WORKDIR /app
 COPY --chown=buildpiper:buildpiper build.sh ./
+COPY --chown=buildpiper:buildpiper BP-BASE-SHELL-STEPS/ /opt/buildpiper/shell-functions/
+COPY --chown=buildpiper:buildpiper BP-BASE-SHELL-STEPS/data/ /opt/buildpiper/data/
 RUN chmod +x build.sh && chown -R buildpiper:buildpiper /app
-
-# ------------------------------------------------------------------------------
-# Switch to Non-Root User
-# ------------------------------------------------------------------------------
 USER buildpiper
-
-# ------------------------------------------------------------------------------
-# Entry Point
-# ------------------------------------------------------------------------------
 ENTRYPOINT ["./build.sh"]

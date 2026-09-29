@@ -83,8 +83,8 @@ fi
 #
 # This file contains ONLY:
 #
-#   PASSED,FAILED,SKIPPED,ERRORS,WARNINGS,TOTAL
-#   2,1,1,0,1,4
+#   PASSED,FAILED,SKIPPED,ERRORS,TOTAL
+#   2,1,1,0,4
 #
 # A copy is also kept at ${REPORTS_DIR}/pytest_summary.csv
 #
@@ -95,16 +95,102 @@ SUMMARY_CSV="${EXEC_DIR}/pytest_summary.csv"
 logInfoMessage "Pytest summary CSV path: ${SUMMARY_CSV}"
 
 # ==============================================================================
+# Step 0: Prepare Pytest Environment
+# ==============================================================================
+#
+# Installs the project's dependencies so test modules can be imported.
+#
+#   INSTALL_REQUIREMENTS=false  -> skip, use the pytest baked into the image
+#   REQUIREMENTS_FILE=<path>    -> install only this file (relative to codebase)
+#
+# Otherwise every requirements*.txt up to 3 levels deep is installed.
+#
+# ==============================================================================
+
+PYTEST_VENV="/tmp/pytest_venv"
+
+if [ "${INSTALL_REQUIREMENTS:-true}" = true ]; then
+
+    logInfoMessage "Setting up Pytest environment..."
+
+    rm -rf "${PYTEST_VENV}"
+
+    python3 -m venv "${PYTEST_VENV}" || {
+        logErrorMessage "Failed to create Python virtual environment."
+        exit 1
+    }
+
+    source "${PYTEST_VENV}/bin/activate"
+
+    pip install --quiet --upgrade pip
+
+    pip install --quiet pytest pytest-cov tabulate || {
+        logErrorMessage "Failed to install pytest in the virtual environment."
+        exit 1
+    }
+
+    if [ -n "${REQUIREMENTS_FILE:-}" ]; then
+
+        REQ_FILES="${CODEBASE_LOCATION}/${REQUIREMENTS_FILE}"
+
+    else
+
+        REQ_FILES="$(find "${CODEBASE_LOCATION}" -maxdepth 3 -name 'requirements*.txt' \
+            -not -path '*/venv/*' \
+            -not -path '*/.venv/*' \
+            -not -path '*/node_modules/*' | sort)"
+
+    fi
+
+    if [ -z "${REQ_FILES}" ]; then
+
+        logWarningMessage "No requirements*.txt found in ${CODEBASE_LOCATION}. Skipping dependency install."
+
+    fi
+
+    while IFS= read -r req_file; do
+
+        [ -z "${req_file}" ] && continue
+
+        if [ ! -f "${req_file}" ]; then
+
+            logWarningMessage "Requirements file not found: ${req_file}"
+            continue
+
+        fi
+
+        logInfoMessage "Installing dependencies from ${req_file}"
+
+        # Run from the file's folder so relative entries (-r, -e .) resolve
+        ( cd "$(dirname "${req_file}")" && pip install --quiet -r "$(basename "${req_file}")" ) || {
+
+            logWarningMessage "Some dependencies from ${req_file} failed to install. Continuing."
+
+        }
+
+    done <<< "${REQ_FILES}"
+
+else
+
+    logInfoMessage "INSTALL_REQUIREMENTS=false. Using pytest from the image."
+
+fi
+
+# ==============================================================================
 # Step 1: Run Pytest
 # ==============================================================================
 
+# Extra pytest arguments, space separated, e.g.
+#   PYTEST_ARGS="--ignore=new_chat_engine/Tests/test_query_analyzer_end_to_end.py"
+read -r -a PYTEST_EXTRA_ARGS <<< "${PYTEST_ARGS:-}"
+
 logInfoMessage "Running pytest on ${CODEBASE_LOCATION}..."
-logInfoMessage "pytest --color=yes --code-highlight=yes --show-capture=all --junit-xml=${JUNIT_REPORT}"
+logInfoMessage "pytest --color=yes --code-highlight=yes --show-capture=all --junit-xml=${JUNIT_REPORT} ${PYTEST_ARGS:-}"
 
 cd "${CODEBASE_LOCATION}" || exit 1
 
 pytest --color=yes --code-highlight=yes --show-capture=all \
-    --junit-xml="${JUNIT_REPORT}" 2>&1 | tee "${CONSOLE_LOG}"
+    --junit-xml="${JUNIT_REPORT}" "${PYTEST_EXTRA_ARGS[@]}" 2>&1 | tee "${CONSOLE_LOG}"
 
 PYTEST_EXIT_CODE=${PIPESTATUS[0]}
 
@@ -125,9 +211,7 @@ fi
 #
 # Counts are read from the final pytest summary line, e.g.
 #
-#   ===== 1 failed, 2 passed, 1 skipped, 1 warning in 0.04s =====
-#
-# Warnings are only available here (JUnit XML does not record them).
+#   ===== 1 failed, 2 passed, 1 skipped, 1 error in 0.04s =====
 #
 # ==============================================================================
 
@@ -148,12 +232,11 @@ PASSED=$(getPytestCount "passed")
 FAILED=$(getPytestCount "failed")
 SKIPPED=$(getPytestCount "skipped")
 ERRORS=$(getPytestCount "errors?")
-WARNINGS=$(getPytestCount "warnings?")
 TOTAL=$((PASSED + FAILED + SKIPPED + ERRORS))
 
 {
-    echo "PASSED,FAILED,SKIPPED,ERRORS,WARNINGS,TOTAL"
-    echo "${PASSED},${FAILED},${SKIPPED},${ERRORS},${WARNINGS},${TOTAL}"
+    echo "PASSED,FAILED,SKIPPED,ERRORS,TOTAL"
+    echo "${PASSED},${FAILED},${SKIPPED},${ERRORS},${TOTAL}"
 } > "${SUMMARY_CSV}"
 
 cp "${SUMMARY_CSV}" "${REPORT_CSV}"
@@ -205,25 +288,61 @@ detailed_file = os.environ["DETAILED_CSV"]
 
 STATUS_ORDER = {"FAILED": 0, "ERROR": 1, "SKIPPED": 2, "PASSED": 3}
 
+# pytest --color codes (raw or XML-escaped as "#x1B")
+ANSI = re.compile(r"(\x1b|#x1B)\[[0-9;]*m")
 
-def filename_from(testcase):
+# Messages that say nothing; the real error is in the element text
+GENERIC_MESSAGES = {"", "collection failure", "internal error"}
+
+
+def module_path(dotted):
+
+    # "tests.test_api" -> "/bp/workspace/<repo>/tests/test_api.py"
+    if not dotted:
+        return ""
+
+    return os.path.normpath(os.path.join(codebase_location, dotted.replace(".", "/") + ".py"))
+
+
+def filename_from(classname):
 
     # "tests.test_api.TestUsers" -> "/bp/workspace/<repo>/tests/test_api.py"
-    parts = (testcase.get("classname") or "").split(".")
+    parts = classname.split(".")
 
     if len(parts) > 1 and parts[-1][:1].isupper():
         parts = parts[:-1]
 
-    if not parts or not parts[0]:
-        return ""
+    return module_path(".".join(parts))
 
-    return os.path.normpath(os.path.join(codebase_location, "/".join(parts) + ".py"))
+
+def detail_line(text):
+
+    # First "E   ..." line of a traceback (the exception itself), else its last
+    # line (e.g. "SystemExit: 1")
+    lines = [line.strip() for line in ANSI.sub("", text or "").splitlines() if line.strip()]
+
+    errors = [line[1:].strip() for line in lines if line.startswith("E ")]
+
+    return errors[0] if errors else (lines[-1] if lines else "")
+
+
+def crash_file(text):
+
+    # Innermost codebase file in a pytest INTERNALERROR traceback
+    root = os.path.normpath(codebase_location) + os.sep
+
+    paths = [
+        os.path.normpath(path)
+        for path in re.findall(r'File "([^"]+\.py)"', ANSI.sub("", text or ""))
+        if os.path.normpath(path).startswith(root)
+    ]
+
+    return paths[-1] if paths else "pytest (internal)"
 
 
 def clean(text):
 
-    # Strip pytest --color codes (raw or XML-escaped as "#x1B")
-    text = re.sub(r"(\x1b|#x1B)\[[0-9;]*m", "", text or "")
+    text = ANSI.sub("", text or "")
 
     # Double quotes break print_table.py's CSV sniffing (same as OWASP step)
     text = " ".join(text.split()).replace('"', "'")
@@ -237,24 +356,44 @@ try:
 
     for testcase in ET.parse(junit_file).getroot().iter("testcase"):
 
-        status, message = "PASSED", ""
+        classname = testcase.get("classname") or ""
+        test_name = testcase.get("name", "")
 
-        for tag, name in (("failure", "FAILED"), ("error", "ERROR"), ("skipped", "SKIPPED")):
+        status, message, details = "PASSED", "", ""
+
+        for tag, tag_status in (("failure", "FAILED"), ("error", "ERROR"), ("skipped", "SKIPPED")):
 
             result = testcase.find(tag)
 
             if result is not None:
-                status = name
+                status = tag_status
                 message = result.get("message") or ""
-
-                if not message and (result.text or "").strip():
-                    message = result.text.strip().splitlines()[0]
-
+                details = result.text or ""
                 break
 
+        if (
+            message.strip().lower() in GENERIC_MESSAGES
+            or message.startswith(("failed on setup with", "failed on teardown with"))
+        ):
+            message = detail_line(details) or message
+
+        if classname == "pytest" and test_name == "internal":
+
+            # pytest itself crashed (e.g. a test module called exit())
+            filename, test_name = crash_file(details), "(internal error)"
+
+        elif not classname:
+
+            # Module failed to import: pytest puts the module in "name"
+            filename, test_name = module_path(test_name), "(collection)"
+
+        else:
+
+            filename = filename_from(classname)
+
         rows.append([
-            filename_from(testcase),
-            testcase.get("name", ""),
+            filename,
+            test_name,
             status,
             "{:.3f}".format(float(testcase.get("time") or 0)),
             clean(message),
@@ -370,17 +509,28 @@ if [ -n "${MI_SERVER_ADDRESS:-}" ] &&
 
         MI_SEND_STATUS=1
 
-    elif sendMIData \
-        "${MI_PAYLOAD}" \
-        "${MI_SERVER_ADDRESS}"; then
-
-        logInfoMessage "Successfully pushed '${source_key}' metrics to MI server."
-
     else
 
-        logErrorMessage "Failed to push '${source_key}' metrics to MI server."
+        # sendMIData always returns 0, so judge the push by the MI response
+        MI_RESPONSE="$(sendMIData "${MI_PAYLOAD}" "${MI_SERVER_ADDRESS}")"
 
-        MI_SEND_STATUS=1
+        echo "${MI_RESPONSE}"
+
+        # Accepted: {"status":"PENDING","ingestion_token":...}
+        # Rejected: {"details":"No metric index is configured ..."} (no status)
+        MI_RESPONSE_JSON="$(grep -o '{.*}' <<< "${MI_RESPONSE}" | tail -1)"
+
+        if ! jq -e 'has("status") or has("ingestion_token")' <<< "${MI_RESPONSE_JSON}" >/dev/null 2>&1; then
+
+            logErrorMessage "MI server did not accept '${source_key}' metrics. See the response above."
+
+            MI_SEND_STATUS=1
+
+        else
+
+            logInfoMessage "Successfully pushed '${source_key}' metrics to MI server."
+
+        fi
 
     fi
 
@@ -399,6 +549,14 @@ else
 fi
 
 unset base64EncodedResponse
+
+if [ -n "${VIRTUAL_ENV:-}" ] && [ "${VIRTUAL_ENV}" = "${PYTEST_VENV}" ]; then
+
+    deactivate || true
+
+    rm -rf "${PYTEST_VENV}"
+
+fi
 
 # ==============================================================================
 # Step 5: Final Pipeline Status
